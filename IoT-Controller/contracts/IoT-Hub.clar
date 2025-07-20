@@ -16,6 +16,9 @@
 (define-constant ERR-DEVICE-MAINTENANCE (err u1010))
 (define-constant ERR-SUBSCRIPTION-EXPIRED (err u1011))
 (define-constant ERR-INVALID-DEVICE-TYPE (err u1012))
+(define-constant ERR-INVALID-STRING-LENGTH (err u1013))
+(define-constant ERR-INVALID-PRINCIPAL (err u1014))
+(define-constant ERR-INVALID-BUFFER (err u1015))
 
 ;; Device status constants
 (define-constant STATUS-ACTIVE u1)
@@ -33,6 +36,20 @@
 (define-constant ACCESS-READ u1)
 (define-constant ACCESS-WRITE u2)
 (define-constant ACCESS-ADMIN u3)
+
+;; Maximum values for validation
+(define-constant MAX-METADATA-LENGTH u500)
+(define-constant MAX-FIRMWARE-VERSION-LENGTH u20)
+(define-constant MAX-DESCRIPTION-LENGTH u300)
+(define-constant MAX-DATA-TYPE-LENGTH u50)
+(define-constant MAX-MAINTENANCE-TYPE-LENGTH u100)
+(define-constant MAX-NOTES-LENGTH u300)
+(define-constant MAX-NAME-LENGTH u100)
+(define-constant MAX-LOCATION-LENGTH u100)
+(define-constant MAX-PRICE u1000000000) ;; 1 billion microSTX max
+(define-constant HASH-LENGTH u32)
+(define-constant MAX-SENSOR-VALUE 2147483647) ;; Maximum int value
+(define-constant MIN-SENSOR-VALUE -2147483648) ;; Minimum int value
 
 ;; DATA STRUCTURES
 
@@ -133,6 +150,71 @@
 (define-data-var maintenance-counter uint u0)
 (define-data-var contract-paused bool false)
 
+;; VALIDATION FUNCTIONS
+
+(define-private (validate-string-length (str (string-ascii 500)) (max-len uint))
+  (and (> (len str) u0) (<= (len str) max-len))
+)
+
+(define-private (validate-buffer-length (buf (buff 32)) (expected-len uint))
+  (is-eq (len buf) expected-len)
+)
+
+(define-private (validate-price (price uint))
+  (<= price MAX-PRICE)
+)
+
+(define-private (validate-principal (user principal))
+  (not (is-eq user 'SP000000000000000000002Q6VF78))
+)
+
+(define-private (validate-metadata (metadata (string-ascii 500)))
+  (validate-string-length metadata MAX-METADATA-LENGTH)
+)
+
+(define-private (validate-firmware-version (version (string-ascii 20)))
+  (validate-string-length version MAX-FIRMWARE-VERSION-LENGTH)
+)
+
+(define-private (validate-description (description (string-ascii 300)))
+  (validate-string-length description MAX-DESCRIPTION-LENGTH)
+)
+
+(define-private (validate-data-type (data-type (string-ascii 50)))
+  (validate-string-length data-type MAX-DATA-TYPE-LENGTH)
+)
+
+(define-private (validate-maintenance-type (maint-type (string-ascii 100)))
+  (validate-string-length maint-type MAX-MAINTENANCE-TYPE-LENGTH)
+)
+
+(define-private (validate-notes (notes (string-ascii 300)))
+  (validate-string-length notes MAX-NOTES-LENGTH)
+)
+
+(define-private (validate-name (name (string-ascii 100)))
+  (validate-string-length name MAX-NAME-LENGTH)
+)
+
+(define-private (validate-location (location (string-ascii 100)))
+  (validate-string-length location MAX-LOCATION-LENGTH)
+)
+
+(define-private (validate-hash (hash (buff 32)))
+  (validate-buffer-length hash HASH-LENGTH)
+)
+
+(define-private (validate-sensor-value (value (optional int)))
+  (match value
+    some-value (and (>= some-value MIN-SENSOR-VALUE) (<= some-value MAX-SENSOR-VALUE))
+    true ;; None is always valid
+  )
+)
+
+(define-private (validate-maintenance-id (maint-id uint))
+  (and (> maint-id u0) (<= maint-id (var-get maintenance-counter)))
+)
+
 ;; PRIVATE FUNCTIONS
 
 (define-private (is-contract-owner (user principal))
@@ -212,7 +294,11 @@
     (asserts! (not (device-exists device-id)) ERR-DEVICE-ALREADY-EXISTS)
     (asserts! (is-valid-device-type device-type) ERR-INVALID-DEVICE-TYPE)
     (asserts! (> (len device-id) u0) ERR-INVALID-PARAMETERS)
-    (asserts! (> (len location) u0) ERR-INVALID-PARAMETERS)
+    (asserts! (validate-location location) ERR-INVALID-STRING-LENGTH)
+    (asserts! (validate-metadata metadata) ERR-INVALID-STRING-LENGTH)
+    (asserts! (validate-firmware-version firmware-version) ERR-INVALID-STRING-LENGTH)
+    (asserts! (validate-price data-price) ERR-INVALID-PARAMETERS)
+    (asserts! (validate-price access-price) ERR-INVALID-PARAMETERS)
     
     (map-set devices
       { device-id: device-id }
@@ -249,6 +335,23 @@
     (asserts! (not (var-get contract-paused)) ERR-NOT-AUTHORIZED)
     (asserts! (device-exists device-id) ERR-DEVICE-NOT-FOUND)
     (asserts! (is-device-owner device-id tx-sender) ERR-NOT-AUTHORIZED)
+    
+    ;; Validate optional parameters if provided
+    (match location 
+      some-location (asserts! (validate-location some-location) ERR-INVALID-STRING-LENGTH)
+      true)
+    (match metadata 
+      some-metadata (asserts! (validate-metadata some-metadata) ERR-INVALID-STRING-LENGTH)
+      true)
+    (match firmware-version 
+      some-version (asserts! (validate-firmware-version some-version) ERR-INVALID-STRING-LENGTH)
+      true)
+    (match data-price 
+      some-price (asserts! (validate-price some-price) ERR-INVALID-PARAMETERS)
+      true)
+    (match access-price 
+      some-price (asserts! (validate-price some-price) ERR-INVALID-PARAMETERS)
+      true)
     
     (match (map-get? devices { device-id: device-id })
       device-info
@@ -312,6 +415,10 @@
     (asserts! (device-exists device-id) ERR-DEVICE-NOT-FOUND)
     (asserts! (has-device-access device-id tx-sender ACCESS-WRITE) ERR-ACCESS-DENIED)
     (asserts! (> data-size u0) ERR-INVALID-PARAMETERS)
+    (asserts! (validate-hash data-hash) ERR-INVALID-BUFFER)
+    (asserts! (validate-data-type data-type) ERR-INVALID-STRING-LENGTH)
+    (asserts! (validate-sensor-value sensor-value) ERR-INVALID-PARAMETERS)
+    (asserts! (validate-hash verification-hash) ERR-INVALID-BUFFER)
     
     ;; Check if device is active
     (let ((device-info (unwrap! (map-get? devices { device-id: device-id }) ERR-DEVICE-NOT-FOUND)))
@@ -397,6 +504,7 @@
     (asserts! (is-device-owner device-id tx-sender) ERR-NOT-AUTHORIZED)
     (asserts! (and (>= access-level ACCESS-READ) (<= access-level ACCESS-ADMIN)) ERR-INVALID-PARAMETERS)
     (asserts! (> duration u0) ERR-INVALID-PARAMETERS)
+    (asserts! (validate-principal user) ERR-INVALID-PRINCIPAL)
     
     (map-set device-access
       { device-id: device-id, user: user }
@@ -418,6 +526,7 @@
     (asserts! (not (var-get contract-paused)) ERR-NOT-AUTHORIZED)
     (asserts! (device-exists device-id) ERR-DEVICE-NOT-FOUND)
     (asserts! (is-device-owner device-id tx-sender) ERR-NOT-AUTHORIZED)
+    (asserts! (validate-principal user) ERR-INVALID-PRINCIPAL)
     
     (map-delete device-access { device-id: device-id, user: user })
     (ok true)
@@ -438,7 +547,9 @@
     (asserts! (not (var-get contract-paused)) ERR-NOT-AUTHORIZED)
     (asserts! (is-none (map-get? device-networks { network-id: network-id })) ERR-DEVICE-ALREADY-EXISTS)
     (asserts! (> (len network-id) u0) ERR-INVALID-PARAMETERS)
-    (asserts! (> (len name) u0) ERR-INVALID-PARAMETERS)
+    (asserts! (validate-name name) ERR-INVALID-STRING-LENGTH)
+    (asserts! (validate-description description) ERR-INVALID-STRING-LENGTH)
+    (asserts! (validate-price network-fee) ERR-INVALID-PARAMETERS)
     
     (map-set device-networks
       { network-id: network-id }
@@ -463,6 +574,7 @@
     (asserts! (not (var-get contract-paused)) ERR-NOT-AUTHORIZED)
     (asserts! (device-exists device-id) ERR-DEVICE-NOT-FOUND)
     (asserts! (is-device-owner device-id tx-sender) ERR-NOT-AUTHORIZED)
+    (asserts! (> (len network-id) u0) ERR-INVALID-PARAMETERS)
     
     (match (map-get? device-networks { network-id: network-id })
       network-info
@@ -514,6 +626,9 @@
     (asserts! (device-exists device-id) ERR-DEVICE-NOT-FOUND)
     (asserts! (is-device-owner device-id tx-sender) ERR-NOT-AUTHORIZED)
     (asserts! (> start-time block-height) ERR-INVALID-TIMESTAMP)
+    (asserts! (validate-maintenance-type maintenance-type) ERR-INVALID-STRING-LENGTH)
+    (asserts! (validate-notes notes) ERR-INVALID-STRING-LENGTH)
+    (asserts! (validate-price estimated-cost) ERR-INVALID-PARAMETERS)
     
     (let ((maintenance-id (+ (var-get maintenance-counter) u1)))
       (map-set maintenance-records
@@ -544,6 +659,10 @@
     (asserts! (not (var-get contract-paused)) ERR-NOT-AUTHORIZED)
     (asserts! (device-exists device-id) ERR-DEVICE-NOT-FOUND)
     (asserts! (is-device-owner device-id tx-sender) ERR-NOT-AUTHORIZED)
+    (asserts! (validate-price actual-cost) ERR-INVALID-PARAMETERS)
+    
+    ;; Validate maintenance-id exists and is valid
+    (asserts! (> maintenance-id u0) ERR-INVALID-PARAMETERS)
     
     (match (map-get? maintenance-records { device-id: device-id, maintenance-id: maintenance-id })
       maintenance-info
